@@ -157,6 +157,12 @@ class Source(object):
             self._buff += data
         self._buff = self._buff[:length]
 
+    def save_cursor(self):
+        return (self._buff, self.cursor)
+
+    def restore_cursor(self, cursor_def):
+        self._buff, self.cursor = cursor_def
+
     def _fetch(self, sector):
         raise NotImplementedError
 
