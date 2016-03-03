@@ -1,6 +1,7 @@
 import datetime
 import struct
 import urllib
+import cStringIO
 
 import path_table
 import record
@@ -18,8 +19,8 @@ class SourceError(Exception):
 class Source(object):
     def __init__(self, cache_content=False, min_fetch=16):
         self._buff = None
+        self._len = 0
         self._sectors = {}
-        self.cursor = None
         self.cache_content = cache_content
         self.min_fetch = min_fetch
         self.susp_starting_index = None
@@ -27,7 +28,17 @@ class Source(object):
         self.rockridge = False
 
     def __len__(self):
-        return len(self._buff) - self.cursor
+        return self._len - self.cursor
+
+    @property
+    def cursor(self):
+        if not self._buff:
+            return None
+        return self._buff.tell()
+
+    @cursor.setter
+    def cursor(self, pos):
+        self._buff.seek(pos)
 
     def rewind_raw(self, l):
         if self.cursor < l:
@@ -35,10 +46,9 @@ class Source(object):
         self.cursor -= l
 
     def unpack_raw(self, l):
-        if l > len(self):
+        data = self._buff.read(l)
+        if len(data) < l:
             raise SourceError("Source buffer under-run")
-        data = self._buff[self.cursor:self.cursor + l]
-        self.cursor += l
         return data
 
     def unpack_all(self):
@@ -148,8 +158,7 @@ class Source(object):
         return new_susp
 
     def seek(self, start_sector, length=SECTOR_LENGTH, is_content=False):
-        self.cursor = 0
-        self._buff = ""
+        self._buff = cStringIO.StringIO()
         do_caching = (not is_content or self.cache_content)
         n_sectors = 1 + (length - 1) // SECTOR_LENGTH
         fetch_sectors = max(self.min_fetch, n_sectors) if do_caching else n_sectors
@@ -157,7 +166,7 @@ class Source(object):
 
         def fetch_needed(need_count):
             data = self._fetch(need_start, need_count)
-            self._buff += data
+            self._buff.write(data)
             if do_caching:
                 for sector_idx in xrange(need_count):
                     self._sectors[need_start + sector_idx] = data[sector_idx*SECTOR_LENGTH:(sector_idx+1)*SECTOR_LENGTH]
@@ -170,20 +179,23 @@ class Source(object):
                 # If we've gotten past the sectors we actually need, don't continue to fetch
                 if sector >= start_sector + n_sectors:
                     break
-                self._buff += self._sectors[sector]
+                self._buff.write(self._sectors[sector])
             elif need_start is None:
                 need_start = sector
 
         if need_start is not None:
             fetch_needed(start_sector + fetch_sectors - need_start)
 
-        self._buff = self._buff[:length]
+        self._buff.seek(length)
+        self._buff.truncate()
+        self._len = length
+        self.cursor = 0
 
     def save_cursor(self):
-        return (self._buff, self.cursor)
+        return (self._buff, self._len)
 
     def restore_cursor(self, cursor_def):
-        self._buff, self.cursor = cursor_def
+        self._buff, self._len = cursor_def
 
     def _fetch(self, sector, count=1):
         raise NotImplementedError
