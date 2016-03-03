@@ -11,18 +11,20 @@ class Record(object):
         self._last_cached_child = None
         target = source.cursor + length
 
-        _                  = source.unpack('B')       # TODO: extended attributes length
-        self.location      = source.unpack_both('I')
-        self.length        = source.unpack_both('I')
-        self.datetime      = source.unpack_dir_datetime()
-        flags              = source.unpack('B')
+        (_,                # B # TODO: extended attributes length
+         self.location,    # I
+         self.length,      # I
+         self.datetime,    # t
+         flags,            # B
+         _,                # B # TODO: interleave unit size
+         _,                # B # TODO: interleave gap size
+         _,                # h # TODO: volume sequence
+         name_length,      # B
+        ) = source.unpack_smart('BIItBBBhB')
+
         self.is_hidden     = flags & 1
         self.is_directory  = flags & 2
         # TODO: other flags
-        _                  = source.unpack('B')       # TODO: interleave unit size
-        _                  = source.unpack('B')       # TODO: interleave gap size
-        _                  = source.unpack_both('h')  # TODO: volume sequence
-        name_length        = source.unpack('B')
         self.raw_name      = source.unpack_string(name_length).split(';')[0]
         if self.raw_name == "\x00":
             self.raw_name = ""

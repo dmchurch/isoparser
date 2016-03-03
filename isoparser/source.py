@@ -2,6 +2,7 @@ import datetime
 import struct
 import urllib
 import cStringIO
+from itertools import izip
 
 import path_table
 import record
@@ -57,9 +58,15 @@ class Source(object):
     def unpack_boundary(self):
         return self.unpack_raw(SECTOR_LENGTH - (self.cursor % SECTOR_LENGTH))
 
+    def _unpack_both(self, st):
+        raw = self.unpack_raw(struct.calcsize('<'+st))
+        le = struct.unpack('<'+st, raw)
+        be = struct.unpack('>'+st, raw)
+        return le, be
+
     def unpack_both(self, st):
-        a = self.unpack('<'+st)
-        b = self.unpack('>'+st)
+        assert len(st) == 1
+        ((a, _), (_, b)) = self._unpack_both(st+st)
         if a != b:
             raise SourceError("Both-endian value mismatch")
         return a
@@ -76,23 +83,68 @@ class Source(object):
         else:
             return d
 
+    _pack_cache = {}
+    def unpack_smart(self, st):
+        if st not in self._pack_cache:
+            needs_both = False
+            pack_list = []
+
+            for code in st:
+                if code in 'cbB':
+                    pack_list.append((code, None))
+                elif code == 't':
+                    pack_list.append(('6Bb', 'dir_datetime'))
+                elif code == 'T':
+                    pack_list.append(('17s', None))
+                else:
+                    pack_list.append((code * 2, 'both'))
+                    needs_both = True
+
+            pack_st = ''.join(p[0] for p in pack_list)
+            pack_struct = struct.Struct('<'+pack_st)
+            pack_struct_be = struct.Struct('>'+pack_st) if needs_both else None
+
+            self._pack_cache[st] = (pack_list, pack_struct, pack_struct_be)
+        else:
+            (pack_list, pack_struct, pack_struct_be) = self._pack_cache[st]
+
+        raw = self.unpack_raw(pack_struct.size)
+        a = pack_struct.unpack(raw)
+        b = pack_struct_be.unpack(raw) if pack_struct_be else a
+
+        value_iter = izip(a, b)
+        for (pack, handler), (value, _) in izip(pack_list, value_iter):
+            if handler == 'dir_datetime':
+                date = [value] + [value_iter.next()[0] for i in xrange(6)]
+                yield self._unpack_dir_datetime(date)
+            elif handler == 'both':
+                _, be_value = value_iter.next()
+                if value != be_value:
+                    raise SourceError("Both-endian value mismatch")
+                yield value
+            else:
+                yield value
+
     def rewind(self, st):
         self.rewind_raw(struct.calcsize(st))
 
+    # Represented by 'T' in unpack_smart
     def unpack_vd_datetime(self):
         return self.unpack_raw(17)  # TODO
 
+    # Represented by 't' in unpack_smart
     def unpack_dir_datetime(self):
-        epoch = datetime.datetime(1970, 1, 1)
-        date = self.unpack_raw(7)
-        t = [struct.unpack('<B', i)[0] for i in date[:-1]]
-        t.append(struct.unpack('<b', date[-1])[0])
-        t[0] += 1900
-        t_offset = t.pop(-1) * 15 * 60.    # Offset from GMT in 15min intervals, converted to secs
-        t_timestamp = (datetime.datetime(*t) - epoch).total_seconds() - t_offset
-        t_datetime = datetime.datetime.fromtimestamp(t_timestamp)
-        t_readable = t_datetime.strftime('%Y-%m-%d %H:%M:%S')
-        return t_readable
+        return self.unpack_lazy_dir_datetime()()
+
+    def unpack_lazy_dir_datetime(self):
+        date = self.unpack('<6Bb')
+        return lambda: self._unpack_dir_datetime(date)
+
+    def _unpack_dir_datetime(self, t):
+        t_offset = t[-1] * 15
+        tz = ISO_tzinfo(t_offset)
+        t_datetime = datetime.datetime(t[0]+1900, *t[1:-1], tzinfo=tz)
+        return t_datetime
 
     def unpack_volume_descriptor(self):
         ty = self.unpack('B')
@@ -135,9 +187,7 @@ class Source(object):
         if maxlen < 4:
             return None
         start_cursor = self.cursor
-        signature = self.unpack_raw(2)
-        length = self.unpack('B')
-        version = self.unpack('B')
+        signature, length, version = self.unpack('2sBB')
         if maxlen < length:
             self.rewind_raw(4)
             return None
@@ -253,3 +303,23 @@ class HTTPSource(Source):
             SECTOR_LENGTH * sector,
             SECTOR_LENGTH * sector + length - 1))
         return opener.open(self._url)
+
+class ISO_tzinfo(datetime.tzinfo):
+    _tzcache = {}
+    def __new__(cls, offset):
+        if offset not in cls._tzcache:
+            cls._tzcache[offset] = datetime.tzinfo.__new__(cls, offset)
+        return cls._tzcache[offset]
+    def __init__(self, offset):
+        self.offset = offset
+        self.delta = datetime.timedelta(minutes=offset)
+    def utcoffset(self, dt):
+        return self.delta
+    def dst(self, dt):
+        return datetime.timedelta(0)
+    def tzname(self, dt):
+        if not self.offset:
+            return "UTC"
+        return "%+d%02d" % (self.offset // 60, self.offset % 60)
+
+ISO_UTC = ISO_tzinfo(0)

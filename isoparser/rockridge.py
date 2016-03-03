@@ -36,12 +36,19 @@ class PX(SUSP_Entry):
 
     def __init__(self, source, ext_id_ver, sig_version, length):
         super(PX, self).__init__(source, ext_id_ver, sig_version, length)
-        susp_assert(length in (32, 40))
-        self.mode   = source.unpack_both('I')
-        self.nlinks = source.unpack_both('I')
-        self.uid    = source.unpack_both('I')
-        self.gid    = source.unpack_both('I')
-        self.ino    = source.unpack_both('I') if length >= 40 else None
+        if length == 32:
+            (self.mode,
+             self.nlinks,
+             self.uid,
+             self.gid,
+            ) = source.unpack_smart('IIII')
+        elif length == 40:
+            (self.mode,
+             self.nlinks,
+             self.uid,
+             self.gid,
+             self.ino,
+            ) = source.unpack_smart('IIIII')
 
 class PN(SUSP_Entry):
     _implements = [
@@ -132,6 +139,20 @@ class NM(SUSP_Entry):
             susp_assert(length > 1)
             self.name = name_content
 
+class datetime_property(object):
+    def __init__(self, name):
+        self.name = name
+
+    def __get__(self, inst, owner):
+        if inst is None:
+            return self
+        value = getattr(inst, "_"+self.name)
+        if callable(value):
+            value = value()
+        setattr(inst, self.name, value)
+        delattr(inst, "_"+self.name)
+        return value
+
 class TF(SUSP_Entry):
     _implements = [
         RRIP_109 + ('TF', 1),
@@ -149,6 +170,14 @@ class TF(SUSP_Entry):
     EFFECTIVE  = 64
     LONG_FORM  = 128
 
+    creation   = datetime_property('creation')
+    modify     = datetime_property('modify')
+    access     = datetime_property('access')
+    attributes = datetime_property('attributes')
+    backup     = datetime_property('backup')
+    expiration = datetime_property('expiration')
+    effective  = datetime_property('effective')
+
     def __init__(self, source, ext_id_ver, sig_version, length):
         super(TF, self).__init__(source, ext_id_ver, sig_version, length)
         susp_assert(length >= 1)
@@ -156,12 +185,12 @@ class TF(SUSP_Entry):
         if self.flags & TF.LONG_FORM:
             unpack_datetime = source.unpack_vd_datetime
         else:
-            unpack_datetime = source.unpack_dir_datetime
+            unpack_datetime = source.unpack_lazy_dir_datetime
 
-        self.creation   = unpack_datetime() if self.flags & TF.CREATION else None
-        self.modify     = unpack_datetime() if self.flags & TF.MODIFY else None
-        self.access     = unpack_datetime() if self.flags & TF.ACCESS else None
-        self.attributes = unpack_datetime() if self.flags & TF.ATTRIBUTES else None
-        self.backup     = unpack_datetime() if self.flags & TF.BACKUP else None
-        self.expiration = unpack_datetime() if self.flags & TF.EXPIRATION else None
-        self.effective  = unpack_datetime() if self.flags & TF.EFFECTIVE else None
+        self._creation   = unpack_datetime() if self.flags & TF.CREATION else None
+        self._modify     = unpack_datetime() if self.flags & TF.MODIFY else None
+        self._access     = unpack_datetime() if self.flags & TF.ACCESS else None
+        self._attributes = unpack_datetime() if self.flags & TF.ATTRIBUTES else None
+        self._backup     = unpack_datetime() if self.flags & TF.BACKUP else None
+        self._expiration = unpack_datetime() if self.flags & TF.EXPIRATION else None
+        self._effective  = unpack_datetime() if self.flags & TF.EFFECTIVE else None
