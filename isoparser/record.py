@@ -1,3 +1,5 @@
+import copy
+
 import susp
 import rockridge
 
@@ -5,6 +7,8 @@ class Record(object):
     def __init__(self, source, length, susp_starting_index=None):
         self._source = source
         self._content = None
+        self._child_cache = {}
+        self._last_cached_child = None
         target = source.cursor + length
 
         _                  = source.unpack('B')       # TODO: extended attributes length
@@ -133,11 +137,17 @@ class Record(object):
         with caution: at each iteration, the generator assumes that the source cursor has not moved
         since the previous child was yielded. For safer behaviour, use :func:`children`.
         """
+        return self._children_unsafe(skip_current_parent=True)
+
+    def _children_unsafe(self, skip_current_parent=False, start_offset=0):
         assert self.is_directory
         self._source.seek(self.location, self.length)
-        _ = self._source.unpack_record()  # current directory
-        _ = self._source.unpack_record()  # parent directory
+        self._source.cursor = start_offset
+        if skip_current_parent:
+            _ = self._source.unpack_record()  # current directory
+            _ = self._source.unpack_record()  # parent directory
         while len(self._source) > 0:
+            self._latest_child_start = self._source.cursor
             record = self._source.unpack_record()
 
             if record is None:
@@ -152,6 +162,33 @@ class Record(object):
         Assuming this is a directory record, this property contains records for its children.
         """
         return list(self.children_unsafe)
+
+    def find_child(self, name):
+        """
+        Assuming this is a directory record, look for and return a child record with the given name,
+        maintaining a directory lookup cache.
+        """
+        if name in self._child_cache:
+            return self._child_cache[name]
+        if self._last_cached_child is not False:
+            if self._last_cached_child:
+                children = self._children_unsafe(start_offset=self._last_cached_child)
+            else:
+                children = self._children_unsafe(skip_current_parent=True)
+            for child in children:
+                # Must save the cursor since child.name can cause a seek
+                saved_cursor = self._source.save_cursor()
+                child_name = child.name
+                self._source.restore_cursor(saved_cursor)
+                self._child_cache[child_name] = child
+                self._last_cached_child = self._source.cursor
+                if child_name == name:
+                    if not child.is_directory:
+                        # Return a copy, otherwise a call to .content would cache forever.
+                        child = copy.copy(child)
+                    return child
+            self._last_cached_child = False
+        raise KeyError("Child %s not found in record %s" % (child_name, repr(self)))
 
     @property
     def current_directory(self):

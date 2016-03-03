@@ -23,6 +23,7 @@ class ISO(object):
             self.volume_descriptors['primary'].path_table_l_loc,
             self.volume_descriptors['primary'].path_table_size)
         self.path_table = self._source.unpack_path_table()
+        self.path_cache = {}
 
         # Save a reference to the root record
         self.root = self.volume_descriptors['primary'].root_record
@@ -44,35 +45,32 @@ class ISO(object):
         """
         record = None
         if self._source.rockridge:
-            # In Rock Ridge mode, we can't use the path table
-            pivot = 0
+            path = list(path)
         else:
             path = [part.upper() for part in path]
-            pivot = len(path)
 
 
-        # Resolve as much of the path as possible via the path table
-        while pivot > 0:
-            try:
-                record = self.path_table.record(*path[:pivot])
-            except KeyError:
-                pivot -= 1
-            else:
-                break
+        subpath = []
+        # Resolve as much of the path as possible via the path table or path cache
+        while path and not record:
+            record = self.path_cache.get(tuple(path))
+            if not record and not self._source.rockridge:
+                try:
+                    record = self.path_table.record(*path)
+                except KeyError:
+                    record = None
+            if not record:
+                subpath.insert(0, path.pop())
 
         if record is None:
             record = self.root
 
         # Resolve the remainder of the path by walking record children
-        for part in path[pivot:]:
-            for child in record.children_unsafe:
-                # Must save the cursor since child.name can cause a seek
-                saved_cursor = self._source.save_cursor()
-                if child.name == part:
-                    record = child
-                    break
-                self._source.restore_cursor(saved_cursor)
-            else:
-                raise KeyError(part)
+        while subpath:
+            part = subpath.pop(0)
+            path.append(part)
+            record = record.find_child(part) # Can raise KeyError
+            if record.is_directory:
+                self.path_cache[tuple(path)] = record
 
         return record
